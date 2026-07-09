@@ -111,6 +111,31 @@ function messagesRequestBody(model = "test-model") {
   };
 }
 
+function bashMessagesRequestBody() {
+  return {
+    model: "test-model",
+    max_tokens: 128,
+    stream: true,
+    messages: [{ role: "user", content: "inspect files" }],
+    tools: [
+      {
+        name: "Bash",
+        description: "Run a shell command",
+        input_schema: {
+          type: "object",
+          properties: {
+            command: { type: "string" },
+            description: { type: "string" },
+            timeout: { type: "integer" },
+          },
+          required: ["command"],
+          additionalProperties: false,
+        },
+      },
+    ],
+  };
+}
+
 test("normalizes streamed tool_use input against the request tool schema", async () => {
   const upstream = await createUpstream(async (req, res) => {
     await readRequest(req);
@@ -159,6 +184,246 @@ test("normalizes streamed tool_use input against the request tool schema", async
     const inputDelta = events.find((event) => event.type === "content_block_delta" && event.delta.type === "input_json_delta");
 
     assert.deepEqual(JSON.parse(inputDelta.delta.partial_json), { file_path: "README.md", offset: 2 });
+  } finally {
+    await stopAdapter(child);
+    await closeServer(upstream);
+  }
+});
+
+test("unwraps nested JSON strings inside Bash command input", async () => {
+  const shellCommand = "which agy; which opencode; ls apps/BE/app/";
+  const concatenatedToolPayload =
+    JSON.stringify({ command: shellCommand, description: "Check tools and read architecture docs" }) +
+    JSON.stringify({ description: "Scout BE backend structure", prompt: "Scout apps/BE", subagent_type: "Explore" }) +
+    JSON.stringify({ description: "Scout FE frontend structure", prompt: "Scout apps/FE", subagent_type: "Explore" });
+  const upstream = await createUpstream(async (req, res) => {
+    await readRequest(req);
+    res.writeHead(200, { "content-type": "text/event-stream" });
+    writeSse(res, "message_start", {
+      type: "message_start",
+      message: {
+        id: "msg_test",
+        type: "message",
+        role: "assistant",
+        content: [],
+        model: "test-model",
+        stop_reason: null,
+        stop_sequence: null,
+        usage: { input_tokens: 1, output_tokens: 0 },
+      },
+    });
+    writeSse(res, "content_block_start", {
+      type: "content_block_start",
+      index: 0,
+      content_block: { type: "tool_use", id: "toolu_test", name: "Bash", input: {} },
+    });
+    writeSse(res, "content_block_delta", {
+      type: "content_block_delta",
+      index: 0,
+      delta: {
+        type: "input_json_delta",
+        partial_json: JSON.stringify({ command: concatenatedToolPayload }),
+      },
+    });
+    writeSse(res, "content_block_stop", { type: "content_block_stop", index: 0 });
+    writeSse(res, "message_delta", {
+      type: "message_delta",
+      delta: { stop_reason: "tool_use", stop_sequence: null },
+      usage: { output_tokens: 1 },
+    });
+    writeSse(res, "message_stop", { type: "message_stop" });
+    res.end();
+  });
+  const { child, baseUrl } = await startAdapter(upstream);
+
+  try {
+    const response = await fetch(`${baseUrl}/v1/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(bashMessagesRequestBody()),
+    });
+    const events = readSseEvents(await response.text());
+    const inputDelta = events.find((event) => event.type === "content_block_delta" && event.delta.type === "input_json_delta");
+
+    assert.deepEqual(JSON.parse(inputDelta.delta.partial_json), { command: shellCommand });
+  } finally {
+    await stopAdapter(child);
+    await closeServer(upstream);
+  }
+});
+
+test("extracts matching properties from concatenated JSON tool payloads", async () => {
+  const filePath = "/Users/macos/.claude/skills/scout/references/internal-scouting.md";
+  const upstream = await createUpstream(async (req, res) => {
+    await readRequest(req);
+    res.writeHead(200, { "content-type": "text/event-stream" });
+    writeSse(res, "message_start", {
+      type: "message_start",
+      message: {
+        id: "msg_test",
+        type: "message",
+        role: "assistant",
+        content: [],
+        model: "test-model",
+        stop_reason: null,
+        stop_sequence: null,
+        usage: { input_tokens: 1, output_tokens: 0 },
+      },
+    });
+    writeSse(res, "content_block_start", {
+      type: "content_block_start",
+      index: 0,
+      content_block: { type: "tool_use", id: "toolu_test", name: "Read", input: {} },
+    });
+    writeSse(res, "content_block_delta", {
+      type: "content_block_delta",
+      index: 0,
+      delta: {
+        type: "input_json_delta",
+        partial_json: JSON.stringify({
+          file_path:
+            JSON.stringify({ file_path: filePath }) +
+            JSON.stringify({ file_path: "/Users/macos/.claude/.ck.json" }) +
+            JSON.stringify({ command: "ls -la /Users/macos/Desktop/source/finops/code-commit-finops" }),
+        }),
+      },
+    });
+    writeSse(res, "content_block_stop", { type: "content_block_stop", index: 0 });
+    writeSse(res, "message_delta", {
+      type: "message_delta",
+      delta: { stop_reason: "tool_use", stop_sequence: null },
+      usage: { output_tokens: 1 },
+    });
+    writeSse(res, "message_stop", { type: "message_stop" });
+    res.end();
+  });
+  const { child, baseUrl } = await startAdapter(upstream);
+
+  try {
+    const response = await fetch(`${baseUrl}/v1/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(messagesRequestBody()),
+    });
+    const events = readSseEvents(await response.text());
+    const inputDelta = events.find((event) => event.type === "content_block_delta" && event.delta.type === "input_json_delta");
+
+    assert.deepEqual(JSON.parse(inputDelta.delta.partial_json), { file_path: filePath });
+  } finally {
+    await stopAdapter(child);
+    await closeServer(upstream);
+  }
+});
+
+test("keeps first values from raw concatenated JSON tool payloads", async () => {
+  const firstCommand = "which agy; which opencode";
+  const upstream = await createUpstream(async (req, res) => {
+    await readRequest(req);
+    res.writeHead(200, { "content-type": "text/event-stream" });
+    writeSse(res, "message_start", {
+      type: "message_start",
+      message: {
+        id: "msg_test",
+        type: "message",
+        role: "assistant",
+        content: [],
+        model: "test-model",
+        stop_reason: null,
+        stop_sequence: null,
+        usage: { input_tokens: 1, output_tokens: 0 },
+      },
+    });
+    writeSse(res, "content_block_start", {
+      type: "content_block_start",
+      index: 0,
+      content_block: { type: "tool_use", id: "toolu_test", name: "Bash", input: {} },
+    });
+    writeSse(res, "content_block_delta", {
+      type: "content_block_delta",
+      index: 0,
+      delta: {
+        type: "input_json_delta",
+        partial_json:
+          JSON.stringify({ command: firstCommand, description: "Check tools" }) +
+          JSON.stringify({ command: "echo wrong", description: "Scout BE", prompt: "Scout apps/BE" }),
+      },
+    });
+    writeSse(res, "content_block_stop", { type: "content_block_stop", index: 0 });
+    writeSse(res, "message_delta", {
+      type: "message_delta",
+      delta: { stop_reason: "tool_use", stop_sequence: null },
+      usage: { output_tokens: 1 },
+    });
+    writeSse(res, "message_stop", { type: "message_stop" });
+    res.end();
+  });
+  const { child, baseUrl } = await startAdapter(upstream);
+
+  try {
+    const response = await fetch(`${baseUrl}/v1/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(bashMessagesRequestBody()),
+    });
+    const events = readSseEvents(await response.text());
+    const inputDelta = events.find((event) => event.type === "content_block_delta" && event.delta.type === "input_json_delta");
+
+    assert.deepEqual(JSON.parse(inputDelta.delta.partial_json), { command: firstCommand, description: "Check tools" });
+  } finally {
+    await stopAdapter(child);
+    await closeServer(upstream);
+  }
+});
+
+test("leaves non-sequence command strings intact", async () => {
+  const command = "{\"command\":\"echo wrong\"} && echo real";
+  const upstream = await createUpstream(async (req, res) => {
+    await readRequest(req);
+    res.writeHead(200, { "content-type": "text/event-stream" });
+    writeSse(res, "message_start", {
+      type: "message_start",
+      message: {
+        id: "msg_test",
+        type: "message",
+        role: "assistant",
+        content: [],
+        model: "test-model",
+        stop_reason: null,
+        stop_sequence: null,
+        usage: { input_tokens: 1, output_tokens: 0 },
+      },
+    });
+    writeSse(res, "content_block_start", {
+      type: "content_block_start",
+      index: 0,
+      content_block: { type: "tool_use", id: "toolu_test", name: "Bash", input: {} },
+    });
+    writeSse(res, "content_block_delta", {
+      type: "content_block_delta",
+      index: 0,
+      delta: { type: "input_json_delta", partial_json: JSON.stringify({ command }) },
+    });
+    writeSse(res, "content_block_stop", { type: "content_block_stop", index: 0 });
+    writeSse(res, "message_delta", {
+      type: "message_delta",
+      delta: { stop_reason: "tool_use", stop_sequence: null },
+      usage: { output_tokens: 1 },
+    });
+    writeSse(res, "message_stop", { type: "message_stop" });
+    res.end();
+  });
+  const { child, baseUrl } = await startAdapter(upstream);
+
+  try {
+    const response = await fetch(`${baseUrl}/v1/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(bashMessagesRequestBody()),
+    });
+    const events = readSseEvents(await response.text());
+    const inputDelta = events.find((event) => event.type === "content_block_delta" && event.delta.type === "input_json_delta");
+
+    assert.deepEqual(JSON.parse(inputDelta.delta.partial_json), { command });
   } finally {
     await stopAdapter(child);
     await closeServer(upstream);
