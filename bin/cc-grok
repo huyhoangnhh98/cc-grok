@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SOURCE="${BASH_SOURCE[0]}"
+while [[ -L "$SOURCE" ]]; do
+  SOURCE_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  [[ "$SOURCE" != /* ]] && SOURCE="$SOURCE_DIR/$SOURCE"
+done
+
+SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+REPO_DIR="$(cd -P "$SCRIPT_DIR/.." && pwd)"
+ADAPTER="$REPO_DIR/lib/cc-grok-adapter.js"
+CONFIG_HELPER="$REPO_DIR/lib/cc-grok-config.js"
+CONFIG_FILE="${CC_GROK_CONFIG:-$HOME/.config/cc-grok/config.json}"
+
+if ! command -v node >/dev/null 2>&1; then
+  echo "cc-grok: node is required" >&2
+  exit 127
+fi
+
+if ! command -v claude >/dev/null 2>&1; then
+  echo "cc-grok: claude command is required" >&2
+  exit 127
+fi
+
+if [[ "${1:-}" == "config" ]]; then
+  case "${2:-show}" in
+    init)
+      node "$CONFIG_HELPER" init "$CONFIG_FILE"
+      ;;
+    path)
+      node "$CONFIG_HELPER" path "$CONFIG_FILE"
+      ;;
+    show)
+      node "$CONFIG_HELPER" show "$CONFIG_FILE"
+      ;;
+    *)
+      echo "cc-grok: usage: cc-grok config [init|path|show]" >&2
+      exit 2
+      ;;
+  esac
+  exit 0
+fi
+
+eval "$(node "$CONFIG_HELPER" shell "$CONFIG_FILE")"
+
+LOG_FILE="$(mktemp "${TMPDIR:-/tmp}/cc-grok-adapter.XXXXXX")"
+node "$ADAPTER" >"$LOG_FILE" 2>&1 &
+ADAPTER_PID=$!
+
+cleanup() {
+  if kill -0 "$ADAPTER_PID" >/dev/null 2>&1; then
+    kill "$ADAPTER_PID" >/dev/null 2>&1 || true
+    wait "$ADAPTER_PID" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup EXIT INT TERM
+
+BASE_URL=""
+for _ in {1..100}; do
+  if ! kill -0 "$ADAPTER_PID" >/dev/null 2>&1; then
+    echo "cc-grok: adapter failed to start" >&2
+    sed -E 's/sk-[A-Za-z0-9_-]+/[REDACTED]/g' "$LOG_FILE" >&2 || true
+    exit 1
+  fi
+
+  READY_LINE="$(grep -m 1 'CC_GROK_ADAPTER_READY' "$LOG_FILE" || true)"
+  if [[ -n "$READY_LINE" ]]; then
+    BASE_URL="$(node -e 'const line = process.argv[1]; const json = line.slice(line.indexOf("{")); console.log(JSON.parse(json).baseUrl)' "$READY_LINE")"
+    break
+  fi
+  sleep 0.05
+done
+
+if [[ -z "$BASE_URL" ]]; then
+  echo "cc-grok: adapter did not become ready" >&2
+  sed -E 's/sk-[A-Za-z0-9_-]+/[REDACTED]/g' "$LOG_FILE" >&2 || true
+  exit 1
+fi
+
+export ANTHROPIC_BASE_URL="$BASE_URL"
+
+exec claude "$@"

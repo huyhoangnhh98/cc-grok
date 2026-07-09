@@ -1,0 +1,10 @@
+{
+  "upstreamBase": "https://grok-worker.lploc94.workers.dev",
+  "apiKey": "",
+  "models": {
+    "main": "grok-4.5-cli",
+    "opus": "grok-4.5-cli",
+    "sonnet": "grok-composer-2.5-fast-cli",
+    "haiku": "grok-composer-2.5-fast-cli"
+  }
+}
