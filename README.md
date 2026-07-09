@@ -8,6 +8,7 @@ It keeps Claude Code as the runtime and UI, but fixes compatibility gaps commonl
 - normalizes `tools[].input_schema.required`
 - moves `messages[].role === "system"` into top-level `system`
 - normalizes streaming content block indexes
+- normalizes Grok model context windows for Claude Code's context meter
 
 ## Install Locally
 
@@ -40,9 +41,15 @@ Then edit `apiKey`. The default model mapping is:
     "opus": "grok-4.5-cli",
     "sonnet": "grok-composer-2.5-fast-cli",
     "haiku": "grok-composer-2.5-fast-cli"
+  },
+  "contextWindows": {
+    "grok-4.5-cli": 500000,
+    "grok-composer-2.5-fast-cli": 200000
   }
 }
 ```
+
+Claude Code currently treats unknown/custom models as 200k context internally. `cc-grok` uses `contextWindows` to normalize model metadata and scale response usage counts so Claude Code's context percentage tracks the real Grok context window.
 
 Show redacted config:
 

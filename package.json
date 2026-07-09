@@ -7,7 +7,8 @@
     "cc-grok": "bin/cc-grok"
   },
   "scripts": {
-    "check": "node --check lib/cc-grok-adapter.js && node --check lib/cc-grok-config.js && bash -n bin/cc-grok"
+    "check": "node --check lib/cc-grok-adapter.js && node --check lib/cc-grok-config.js && bash -n bin/cc-grok && npm test",
+    "test": "node --test"
   },
   "engines": {
     "node": ">=20"
